@@ -18,7 +18,9 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY!,
 });
 
-const SYSTEM_PROMPT = `あなたはマルタ村プロジェクトのAIアシスタントです。川西市モルックドームを拠点としたコミュニティサービス群の開発をサポートしています。打ち合わせの決定事項の整理、技術的な質問への回答、プロジェクトの進捗管理を手伝ってください。`;
+const SYSTEM_PROMPT = `あなたはマルタ村プロジェクトのAIアシスタントです。川西市モルックドームを拠点としたコミュニティサービス群の開発をサポートしています。打ち合わせの決定事項の整理、技術的な質問への回答、プロジェクトの進捗管理を手伝ってください。
+
+重要: 回答はLINEメッセージとして送信されます。LINEはMarkdownに対応していないため、**太字**、##見出し、- リスト、\`コード\`などのMarkdown記法は一切使わないでください。プレーンテキストのみで回答してください。箇条書きが必要な場合は「・」や「1.」を使ってください。`;
 
 async function generateReply(userMessage: string): Promise<string> {
   const response = await anthropic.messages.create({
