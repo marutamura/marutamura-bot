@@ -1,4 +1,5 @@
 {
+  "buildCommand": "tsc",
   "rewrites": [
     { "source": "/webhook", "destination": "/api/webhook" }
   ]
