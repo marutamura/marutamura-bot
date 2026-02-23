@@ -11,6 +11,8 @@ const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN!;
 const channelSecret = process.env.LINE_CHANNEL_SECRET!;
 const notionToken = process.env.NOTION_TOKEN!;
 const notionPageId = process.env.NOTION_PAGE_ID!;
+const githubToken = process.env.GITHUB_TOKEN!;
+const githubOrg = "marutamura";
 
 const lineClient = new messagingApi.MessagingApiClient({ channelAccessToken });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
@@ -22,11 +24,91 @@ const NOTION_HEADERS = {
   "Content-Type": "application/json",
 };
 
+// アプリ名とGitHubリポジトリのマッピング
+const APP_REPO_MAP: Record<string, string> = {
+  "マルタギルド": "marta-guild",
+  "満願寺御朱印帳": "manganji-stamp",
+  "モノハブ": "monohub",
+  "推し活": "oshi-katsu",
+  "目標達成部": "mokuhyo-tassei-bu",
+  "あちらさまからです": "achirasama",
+  "ハッピー鑑定士": "happykantei",
+  "満願寺どっち": "manganji-stamp",
+};
+
 const SYSTEM_PROMPT = `あなたはマルタ村プロジェクトのNotionページを管理するパートナーAIです。
 ユーザーからの質問にはNotionの内容を参照して答えてください。
 修正・追加の依頼には、現在の内容を示した上で修正案を提案し、確認を取ってから実行してください。
 実行後はNotionページのURLを添えて報告してください。
 LINEはMarkdownに対応していないので**や##などの記号は使わないでください。`;
+
+const ISSUE_JUDGE_PROMPT = `あなたはマルタ村プロジェクトのアシスタントです。
+ユーザーのメッセージがアプリの修正依頼・バグ報告・機能追加要望かどうかを判断してください。
+
+マルタ村のアプリ一覧:
+- マルタギルド（依頼・受注掲示板）
+- 満願寺御朱印帳（77ヶ寺巡礼スタンプ帳）
+- モノハブ（売買・譲渡掲示板）
+- 推し活（推しコンテンツ共有）
+- 目標達成部（目標管理）
+- あちらさまからです（入場券プレゼント）
+- ハッピー鑑定士（検定試験）
+
+修正依頼と判断した場合は以下のJSON形式で返してください:
+{
+  "is_issue": true,
+  "app_name": "アプリ名（上記リストから）",
+  "issue_title": "Issueのタイトル（簡潔に）",
+  "issue_body": "Issueの本文（詳細な説明）",
+  "manus_instruction": "Manusへの指示文（修正内容を具体的に）",
+  "confirm_message": "ユーザーへの確認メッセージ（LINEで送る文章）"
+}
+
+修正依頼でない場合:
+{
+  "is_issue": false
+}
+
+JSONのみを返してください。`;
+
+// セッション管理（メモリ上、サーバーレスなので簡易的）
+const pendingIssues: Record<string, {
+  app_name: string;
+  repo: string;
+  issue_title: string;
+  issue_body: string;
+  manus_instruction: string;
+  expires_at: number;
+}> = {};
+
+// --- GitHub helpers ---
+
+async function createGitHubIssue(
+  repo: string,
+  title: string,
+  body: string
+): Promise<string> {
+  const res = await fetch(
+    `https://api.github.com/repos/${githubOrg}/${repo}/issues`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${githubToken}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ title, body }),
+    }
+  );
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`GitHub API error: ${err}`);
+  }
+
+  const data: any = await res.json();
+  return data.html_url;
+}
 
 // --- Notion helpers ---
 
@@ -208,9 +290,85 @@ async function executeTool(name: string, input: any): Promise<string> {
   }
 }
 
+// --- Issue判定 ---
+
+async function judgeIfIssue(userMessage: string): Promise<any> {
+  const response = await anthropic.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 1024,
+    messages: [
+      {
+        role: "user",
+        content: `${ISSUE_JUDGE_PROMPT}\n\nユーザーメッセージ: ${userMessage}`,
+      },
+    ],
+  });
+
+  const text = response.content.find((b) => b.type === "text")?.text ?? "{}";
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { is_issue: false };
+  }
+}
+
 // --- Main reply logic ---
 
-async function generateReply(userMessage: string): Promise<string> {
+async function generateReply(userMessage: string, userId: string): Promise<string> {
+  // 「はい」系の返答 → pending issueがあれば作成
+  const yesPatterns = ["はい", "yes", "そうして", "お願い", "作って", "よろしく", "いいよ", "ええよ"];
+  const noPatterns = ["いいえ", "no", "やめて", "キャンセル", "違う", "ちがう"];
+
+  const isYes = yesPatterns.some((p) => userMessage.includes(p));
+  const isNo = noPatterns.some((p) => userMessage.includes(p));
+
+  if (isYes && pendingIssues[userId]) {
+    const pending = pendingIssues[userId];
+    // 期限切れチェック
+    if (Date.now() > pending.expires_at) {
+      delete pendingIssues[userId];
+    } else {
+      try {
+        const issueUrl = await createGitHubIssue(
+          pending.repo,
+          pending.issue_title,
+          pending.issue_body
+        );
+        delete pendingIssues[userId];
+
+        return `Issue作成しました！\n\n${issueUrl}\n\n中さんへの指示文はこちら↓\n\n${pending.manus_instruction}`;
+      } catch (error) {
+        delete pendingIssues[userId];
+        return `Issueの作成に失敗しました。${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+  }
+
+  if (isNo && pendingIssues[userId]) {
+    delete pendingIssues[userId];
+    return "キャンセルしました。他に何かあれば聞いてください！";
+  }
+
+  // Issue判定
+  const judgment = await judgeIfIssue(userMessage);
+
+  if (judgment.is_issue) {
+    const repo = APP_REPO_MAP[judgment.app_name];
+    if (repo) {
+      // pending issueとして保存（5分間有効）
+      pendingIssues[userId] = {
+        app_name: judgment.app_name,
+        repo,
+        issue_title: judgment.issue_title,
+        issue_body: judgment.issue_body,
+        manus_instruction: judgment.manus_instruction,
+        expires_at: Date.now() + 5 * 60 * 1000,
+      };
+      return judgment.confirm_message;
+    }
+  }
+
+  // 通常のNotion会話
   const blocks = await fetchAllBlocks();
   const notionContent = formatBlocksForPrompt(blocks);
 
@@ -229,7 +387,6 @@ async function generateReply(userMessage: string): Promise<string> {
     messages,
   });
 
-  // Tool use loop
   while (response.stop_reason === "tool_use") {
     messages.push({ role: "assistant", content: response.content });
 
@@ -288,9 +445,10 @@ export default async function handler(
 
       const userMessage = event.message.text;
       const replyToken = event.replyToken;
+      const userId = event.source.userId ?? "unknown";
 
       try {
-        const replyText = await generateReply(userMessage);
+        const replyText = await generateReply(userMessage, userId);
         const message: TextMessage = { type: "text", text: replyText };
         await lineClient.replyMessage({ replyToken, messages: [message] });
       } catch (error) {
