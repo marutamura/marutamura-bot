@@ -42,34 +42,24 @@ const SYSTEM_PROMPT = `あなたはマルタ村プロジェクトのNotionペー
 実行後はNotionページのURLを添えて報告してください。
 LINEはMarkdownに対応していないので**や##などの記号は使わないでください。`;
 
-const ISSUE_JUDGE_PROMPT = `あなたはマルタ村プロジェクトのアシスタントです。
-ユーザーのメッセージがアプリの修正依頼・バグ報告・機能追加要望かどうかを判断してください。
+const ISSUE_JUDGE_PROMPT = `You are a helper that analyzes user messages and returns JSON only.
 
-マルタ村のアプリ一覧:
-- マルタギルド（依頼・受注掲示板）
-- 満願寺御朱印帳（77ヶ寺巡礼スタンプ帳）
-- モノハブ（売買・譲渡掲示板）
-- 推し活（推しコンテンツ共有）
-- 目標達成部（目標管理）
-- あちらさまからです（入場券プレゼント）
-- ハッピー鑑定士（検定試験）
+Determine if the message is an app bug report, fix request, or feature request for one of these apps:
+- マルタギルド
+- 満願寺御朱印帳
+- モノハブ
+- 推し活
+- 目標達成部
+- あちらさまからです
+- ハッピー鑑定士
 
-修正依頼と判断した場合は以下のJSON形式で返してください:
-{
-  "is_issue": true,
-  "app_name": "アプリ名（上記リストから）",
-  "issue_title": "Issueのタイトル（簡潔に）",
-  "issue_body": "Issueの本文（詳細な説明）",
-  "manus_instruction": "Manusへの指示文（修正内容を具体的に）",
-  "confirm_message": "ユーザーへの確認メッセージ（LINEで送る文章）"
-}
+If it IS a fix/bug/feature request, return ONLY this JSON (no other text):
+{"is_issue":true,"app_name":"アプリ名","issue_title":"タイトル","issue_body":"詳細説明","manus_instruction":"Manusへの具体的な修正指示","confirm_message":"GitHubにIssueを作成しますか？\n\nアプリ: [アプリ名]\n内容: [タイトル]"}
 
-修正依頼でない場合:
-{
-  "is_issue": false
-}
+If it is NOT a fix request, return ONLY this JSON (no other text):
+{"is_issue":false}
 
-JSONのみを返してください。`;
+IMPORTANT: Return raw JSON only. No markdown, no explanation, no code blocks.`;
 
 // セッション管理（メモリ上、サーバーレスなので簡易的）
 const pendingIssues: Record<string, {
